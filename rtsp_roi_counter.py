@@ -38,14 +38,17 @@ class ROI:
     
     def contains_bbox(self, bbox_x1, bbox_y1, bbox_x2, bbox_y2, 
                       frame_width, frame_height) -> bool:
-        """Check if bbox overlaps with ROI (absolute coordinates)"""
+        """
+        Check if bbox overlaps with ROI (any overlap counts as detection in ROI).
+        Returns True if there's ANY overlap between bbox and ROI.
+        """
         # Convert ROI to absolute coordinates
         roi_abs_x1 = self.x1 * frame_width
         roi_abs_y1 = self.y1 * frame_height
         roi_abs_x2 = self.x2 * frame_width
         roi_abs_y2 = self.y2 * frame_height
         
-        # Check for overlap (no overlap if separated)
+        # Check for overlap (no overlap if completely separated)
         if (bbox_x2 < roi_abs_x1 or bbox_x1 > roi_abs_x2 or
             bbox_y2 < roi_abs_y1 or bbox_y1 > roi_abs_y2):
             return False
@@ -173,8 +176,12 @@ class RTSPROICounter:
         log_level = self.config.get('log_level', 'INFO')
         log_file = self.config.get('log_file', '/var/log/rtsp_roi_counter.log')
         
-        # Create logs directory if needed
-        os.makedirs(os.path.dirname(log_file), exist_ok=True)
+        # Try to create log directory, fall back to local if permission denied
+        try:
+            os.makedirs(os.path.dirname(log_file), exist_ok=True)
+        except PermissionError:
+            log_file = './rtsp_roi_counter.log'
+            print(f"Warning: Cannot write to /var/log, using {log_file} instead")
         
         logging.basicConfig(
             level=getattr(logging, log_level),
@@ -232,6 +239,16 @@ class RTSPROICounter:
         if buffer is None:
             return Gst.PadProbeReturn.OK
         
+        # Extract frame dimensions from caps on first frame if not set
+        if self.frame_count == 0:
+            caps = pad.get_current_caps()
+            if caps and caps.get_size() > 0:
+                structure = caps.get_structure(0)
+                if structure.has_field('width') and structure.has_field('height'):
+                    self.frame_width = structure.get_int('width')[1]
+                    self.frame_height = structure.get_int('height')[1]
+                    self.logger.info(f"Frame dimensions from pad caps: {self.frame_width}x{self.frame_height}")
+        
         person_count = 0
         vehicle_count = 0
         total_detections = 0
@@ -249,36 +266,64 @@ class RTSPROICounter:
             if self.frame_count < 3:
                 self.logger.info(f"Frame {self.frame_count}: Found {len(detections)} detections")
             
+            # Label to COCO class ID mapping
+            LABEL_TO_CLASS = {
+                "person": 0,
+                "car": 2,
+                "automobile": 2,
+                "motorcycle": 3,
+                "motorbike": 3,
+                "bus": 5,
+                "truck": 7,
+                "lorry": 7,
+            }
+            
             # Process each detection
             for detection in detections:
-                label = detection.get_label()
+                # Try get_class_id first (more reliable), fall back to label
+                class_id = None
+                try:
+                    if hasattr(detection, 'get_class_id'):
+                        class_id = detection.get_class_id()
+                except:
+                    pass
+                
+                # If no class_id, try to get from label
+                if class_id is None:
+                    try:
+                        label = detection.get_label()
+                        if isinstance(label, str):
+                            class_id = LABEL_TO_CLASS.get(label.lower())
+                        elif isinstance(label, int):
+                            class_id = label
+                    except:
+                        pass
+                
+                if class_id is None:
+                    continue  # Skip if we can't determine class
+                
                 bbox = detection.get_bbox()
                 confidence = detection.get_confidence()
                 
-                # Get bbox coordinates (normalized 0-1)
-                x1 = bbox.xmin() * self.frame_width
-                y1 = bbox.ymin() * self.frame_height
-                x2 = bbox.xmax() * self.frame_width
-                y2 = bbox.ymax() * self.frame_height
+                # Get bbox coordinates - Hailo returns normalized 0-1
+                # We need to convert to absolute pixels for ROI comparison
+                bbox_xmin = bbox.xmin()
+                bbox_ymin = bbox.ymin()
+                bbox_xmax = bbox.xmax()
+                bbox_ymax = bbox.ymax()
+                
+                # Convert normalized coordinates to absolute pixels
+                x1 = bbox_xmin * self.frame_width
+                y1 = bbox_ymin * self.frame_height
+                x2 = bbox_xmax * self.frame_width
+                y2 = bbox_ymax * self.frame_height
                 
                 if self.frame_count < 3:
-                    self.logger.debug(f"  Detection: {label} (conf={confidence:.2f}) bbox=({x1:.0f},{y1:.0f},{x2:.0f},{y2:.0f})")
+                    self.logger.debug(f"  Detection: class={class_id} (conf={confidence:.2f}) "
+                                    f"norm=({bbox_xmin:.3f},{bbox_ymin:.3f},{bbox_xmax:.3f},{bbox_ymax:.3f}) "
+                                    f"abs=({x1:.0f},{y1:.0f},{x2:.0f},{y2:.0f})")
                 
-                # Map label to class ID (COCO dataset)
-                # Note: Hailo models typically output labels directly
-                class_id = None
-                if label.lower() == "person":
-                    class_id = COCO_PERSON
-                elif label.lower() in ["car", "automobile"]:
-                    class_id = 2
-                elif label.lower() in ["motorcycle", "motorbike"]:
-                    class_id = 3
-                elif label.lower() == "bus":
-                    class_id = 5
-                elif label.lower() == "truck":
-                    class_id = 7
-                
-                # Check if in ROI
+                # Check if detection overlaps with ROI
                 if self.roi.contains_bbox(x1, y1, x2, y2, self.frame_width, self.frame_height):
                     total_detections += 1
                     if class_id == COCO_PERSON:
@@ -288,7 +333,7 @@ class RTSPROICounter:
                     elif class_id in COCO_VEHICLES:
                         vehicle_count += 1
                         if self.frame_count < 3:
-                            self.logger.info(f"  -> Vehicle in ROI!")
+                            self.logger.info(f"  -> Vehicle (class {class_id}) in ROI!")
         
         except ImportError as e:
             if self.frame_count == 0:
@@ -300,18 +345,19 @@ class RTSPROICounter:
                 import traceback
                 self.logger.error(traceback.format_exc())
         
-        # Update statistics with REAL frame interval
-        stats = DetectionStats(
-            timestamp=current_time,
-            person_count=person_count,
-            vehicle_count=vehicle_count,
-            total_detections=total_detections,
-            processing_time_ms=frame_interval_ms,  # This is now frame-to-frame time
-            roi_name=self.roi.name
-        )
-        
-        self.perf_monitor.add_frame_time(frame_interval_ms)
-        self.perf_monitor.add_detection(stats)
+        # Update statistics with REAL frame interval (skip first frame with interval=0)
+        if frame_interval_ms > 0:
+            stats = DetectionStats(
+                timestamp=current_time,
+                person_count=person_count,
+                vehicle_count=vehicle_count,
+                total_detections=total_detections,
+                processing_time_ms=frame_interval_ms,  # Actually frame interval
+                roi_name=self.roi.name
+            )
+            
+            self.perf_monitor.add_frame_time(frame_interval_ms)
+            self.perf_monitor.add_detection(stats)
         
         self.frame_count += 1
         
@@ -321,8 +367,9 @@ class RTSPROICounter:
             self.logger.info(
                 f"Frame {self.frame_count} | "
                 f"Persons: {person_count} | Vehicles: {vehicle_count} | "
+                f"Total detections in ROI: {total_detections} | "
                 f"FPS: {perf_stats.get('fps', 0):.1f} | "
-                f"Interval: {perf_stats.get('avg_processing_time_ms', 0):.1f}ms"
+                f"Frame interval: {perf_stats.get('avg_processing_time_ms', 0):.1f}ms"
             )
             self.last_log_time = time.time()
         
@@ -360,13 +407,12 @@ class RTSPROICounter:
         source_pipeline = (
             f'rtspsrc location="{rtsp_url}" '
             f'latency={rtsp_latency} '
-            'protocols=tcp '
-            'drop-on-latency=true ! '
-            'queue max-size-buffers=2 leaky=downstream ! '
+            'protocols=tcp ! '
+            'queue max-size-buffers=3 leaky=downstream ! '
             'rtph264depay ! '
             'h264parse ! '
-            'avdec_h264 max-threads=2 ! '
-            'videoconvert n-threads=2 ! '
+            'avdec_h264 threads=2 ! '
+            'videoconvert ! '
         )
         
         # Resize for inference
@@ -400,12 +446,12 @@ class RTSPROICounter:
             
             'queue max-size-buffers=3 max-size-bytes=0 max-size-time=0 ! '
             f'hailofilter so-path={postprocess_so} '
-            'qos=false ! '
+            'qos=false name=hailo_filter ! '
             
             # hailooverlay processes the detections and makes them available
             'queue max-size-buffers=3 max-size-bytes=0 max-size-time=0 ! '
-            'hailooverlay name=hailo_display ! '
-            'videoconvert name=identity_callback ! '
+            'hailooverlay ! '
+            'videoconvert ! '
         )
         
         # Sink - fakesink for headless operation
@@ -434,20 +480,29 @@ class RTSPROICounter:
             self.logger.error(f"Failed to create pipeline: {e}")
             return 1
         
-        # Add probe after hailooverlay (via videoconvert)
-        identity = self.pipeline.get_by_name('identity_callback')
-        if identity:
-            sink_pad = identity.get_static_pad('sink')
-            if sink_pad:
-                sink_pad.add_probe(
+        # Add probe to hailofilter output (before metadata might be lost)
+        hailo_filter = self.pipeline.get_by_name('hailo_filter')
+        if hailo_filter:
+            src_pad = hailo_filter.get_static_pad('src')
+            if src_pad:
+                src_pad.add_probe(
                     Gst.PadProbeType.BUFFER,
                     self.on_buffer_probe
                 )
-                self.logger.info("Added buffer probe after hailooverlay")
+                self.logger.info("Added buffer probe to hailofilter output")
+                
+                # Get actual frame dimensions from caps
+                caps = src_pad.get_current_caps()
+                if caps and caps.get_size() > 0:
+                    structure = caps.get_structure(0)
+                    if structure.has_field('width') and structure.has_field('height'):
+                        self.frame_width = structure.get_int('width')[1]
+                        self.frame_height = structure.get_int('height')[1]
+                        self.logger.info(f"Frame dimensions from caps: {self.frame_width}x{self.frame_height}")
             else:
-                self.logger.warning("Could not get sink pad from videoconvert")
+                self.logger.warning("Could not get src pad from hailo_filter")
         else:
-            self.logger.warning("Could not find videoconvert element")
+            self.logger.warning("Could not find hailo_filter element")
         
         # Setup bus
         bus = self.pipeline.get_bus()
