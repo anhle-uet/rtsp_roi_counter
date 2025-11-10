@@ -411,7 +411,7 @@ class RTSPROICounter:
             'queue max-size-buffers=3 leaky=downstream ! '
             'rtph264depay ! '
             'h264parse ! '
-            'avdec_h264 threads=2 ! '
+            'avdec_h264 ! '
             'videoconvert ! '
         )
         
@@ -447,11 +447,6 @@ class RTSPROICounter:
             'queue max-size-buffers=3 max-size-bytes=0 max-size-time=0 ! '
             f'hailofilter so-path={postprocess_so} '
             'qos=false name=hailo_filter ! '
-            
-            # hailooverlay processes the detections and makes them available
-            'queue max-size-buffers=3 max-size-bytes=0 max-size-time=0 ! '
-            'hailooverlay ! '
-            'videoconvert ! '
         )
         
         # Sink - fakesink for headless operation
