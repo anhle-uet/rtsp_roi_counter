@@ -282,6 +282,7 @@ class RTSPROICounter:
             for detection in detections:
                 # Try get_class_id first (more reliable), fall back to label
                 class_id = None
+                label_str = None
                 try:
                     if hasattr(detection, 'get_class_id'):
                         class_id = detection.get_class_id()
@@ -292,15 +293,13 @@ class RTSPROICounter:
                 if class_id is None:
                     try:
                         label = detection.get_label()
+                        label_str = str(label)  # Store for logging
                         if isinstance(label, str):
                             class_id = LABEL_TO_CLASS.get(label.lower())
                         elif isinstance(label, int):
                             class_id = label
                     except:
                         pass
-                
-                if class_id is None:
-                    continue  # Skip if we can't determine class
                 
                 bbox = detection.get_bbox()
                 confidence = detection.get_confidence()
@@ -318,22 +317,31 @@ class RTSPROICounter:
                 x2 = bbox_xmax * self.frame_width
                 y2 = bbox_ymax * self.frame_height
                 
-                if self.frame_count < 3:
-                    self.logger.debug(f"  Detection: class={class_id} (conf={confidence:.2f}) "
-                                    f"norm=({bbox_xmin:.3f},{bbox_ymin:.3f},{bbox_xmax:.3f},{bbox_ymax:.3f}) "
-                                    f"abs=({x1:.0f},{y1:.0f},{x2:.0f},{y2:.0f})")
-                
                 # Check if detection overlaps with ROI
-                if self.roi.contains_bbox(x1, y1, x2, y2, self.frame_width, self.frame_height):
-                    total_detections += 1
-                    if class_id == COCO_PERSON:
-                        person_count += 1
-                        if self.frame_count < 3:
-                            self.logger.info(f"  -> Person in ROI!")
-                    elif class_id in COCO_VEHICLES:
-                        vehicle_count += 1
-                        if self.frame_count < 3:
-                            self.logger.info(f"  -> Vehicle (class {class_id}) in ROI!")
+                in_roi = self.roi.contains_bbox(x1, y1, x2, y2, self.frame_width, self.frame_height)
+                
+                if self.frame_count < 3 or (self.frame_count < 50 and in_roi):
+                    self.logger.info(f"  Detection: class_id={class_id}, label={label_str}, "
+                                   f"conf={confidence:.2f}, in_roi={in_roi}")
+                
+                if not in_roi:
+                    continue  # Skip detections outside ROI
+                
+                # Count detections in ROI by class
+                total_detections += 1
+                
+                if class_id == COCO_PERSON:
+                    person_count += 1
+                    if self.frame_count < 10:
+                        self.logger.info(f"  -> Person in ROI!")
+                elif class_id in COCO_VEHICLES:
+                    vehicle_count += 1
+                    if self.frame_count < 10:
+                        self.logger.info(f"  -> Vehicle (class {class_id}) in ROI!")
+                else:
+                    # Log unmatched classes to help debug
+                    if self.frame_count < 50:
+                        self.logger.warning(f"  -> Unmatched class in ROI: class_id={class_id}, label={label_str}")
         
         except ImportError as e:
             if self.frame_count == 0:
