@@ -217,7 +217,7 @@ class RTSPROICounter:
         raise FileNotFoundError("Post-process library not found")
     
     def on_buffer_probe(self, pad, info):
-        """Process detection results from hailofilter output"""
+        """Process detection results using Hailo API"""
         frame_start_time = time.time()
         
         buffer = info.get_buffer()
@@ -227,99 +227,70 @@ class RTSPROICounter:
         person_count = 0
         vehicle_count = 0
         total_detections = 0
-        found_detections = False
         
-        # Try to import and use Hailo Python API
         try:
+            # Use Hailo API to get ROI from buffer
             import hailo
             
-            # Get Hailo ROI list from buffer
-            roi_list = hailo.get_hailo_rois_from_buffer(buffer)
+            # Get the root ROI from buffer
+            roi = hailo.get_roi_from_buffer(buffer)
             
-            if self.frame_count < 5:
-                self.logger.info(f"Frame {self.frame_count}: Found {len(roi_list)} Hailo ROIs")
+            # Get all detections from the ROI
+            detections = roi.get_objects_typed(hailo.HAILO_DETECTION)
             
-            # Process each ROI
-            for hailo_roi in roi_list:
-                # Get all detection objects
-                detections = hailo_roi.get_objects_typed(hailo.HAILO_DETECTION)
-                
-                if self.frame_count < 5:
-                    self.logger.info(f"  ROI has {len(detections)} detections")
-                
-                for detection in detections:
-                    # Get bounding box
-                    bbox = detection.get_bbox()
-                    class_id = detection.get_class_id()
-                    confidence = detection.get_confidence()
-                    
-                    # Get coordinates (normalized 0-1)
-                    x1 = bbox.xmin() * self.frame_width
-                    y1 = bbox.ymin() * self.frame_height
-                    x2 = bbox.xmax() * self.frame_width
-                    y2 = bbox.ymax() * self.frame_height
-                    
-                    found_detections = True
-                    
-                    if self.frame_count < 3:
-                        self.logger.debug(f"  Detection: class={class_id}, conf={confidence:.2f}, bbox=({x1:.0f},{y1:.0f},{x2:.0f},{y2:.0f})")
-                    
-                    # Check if in ROI
-                    if self.roi.contains_bbox(x1, y1, x2, y2, self.frame_width, self.frame_height):
-                        total_detections += 1
-                        if class_id == COCO_PERSON:
-                            person_count += 1
-                        elif class_id in COCO_VEHICLES:
-                            vehicle_count += 1
-        
-        except ImportError:
-            # Fallback: Try GStreamer metadata iteration
-            if self.frame_count == 0:
-                self.logger.warning("Hailo Python API not available, trying GStreamer metadata")
+            if self.frame_count < 3:
+                self.logger.info(f"Frame {self.frame_count}: Found {len(detections)} detections")
             
-            try:
-                # Iterate through metadata using foreach
-                def meta_foreach_func(buffer, meta, user_data):
-                    nonlocal person_count, vehicle_count, total_detections, found_detections
-                    
-                    try:
-                        # Try to get structure from meta
-                        if hasattr(meta, 'get_structure'):
-                            structure = meta.get_structure()
-                            if structure:
-                                struct_name = structure.get_name()
-                                
-                                if self.frame_count < 3:
-                                    self.logger.debug(f"Meta structure: {struct_name}")
-                                
-                                # Check for Hailo detection metadata
-                                if "hailo" in struct_name.lower() or "detection" in struct_name.lower():
-                                    # Try to parse detections from structure
-                                    # This depends on the specific format used by hailofilter
-                                    if structure.has_field('num_detections'):
-                                        num_dets = structure.get_int('num_detections')[1]
-                                        if self.frame_count < 3:
-                                            self.logger.info(f"Found {num_dets} detections in structure")
-                                        found_detections = True
-                    except Exception as e:
-                        if self.frame_count < 3:
-                            self.logger.debug(f"Error in meta_foreach: {e}")
-                    
-                    return True  # Continue iteration
+            # Process each detection
+            for detection in detections:
+                label = detection.get_label()
+                bbox = detection.get_bbox()
+                confidence = detection.get_confidence()
                 
-                buffer.foreach_meta(meta_foreach_func, None)
+                # Get bbox coordinates (normalized 0-1)
+                x1 = bbox.xmin() * self.frame_width
+                y1 = bbox.ymin() * self.frame_height
+                x2 = bbox.xmax() * self.frame_width
+                y2 = bbox.ymax() * self.frame_height
                 
-            except Exception as e:
                 if self.frame_count < 3:
-                    self.logger.error(f"Error in GStreamer metadata fallback: {e}")
+                    self.logger.debug(f"  Detection: {label} (conf={confidence:.2f}) bbox=({x1:.0f},{y1:.0f},{x2:.0f},{y2:.0f})")
+                
+                # Map label to class ID (COCO dataset)
+                # Note: Hailo models typically output labels directly
+                class_id = None
+                if label.lower() == "person":
+                    class_id = COCO_PERSON
+                elif label.lower() in ["car", "automobile"]:
+                    class_id = 2
+                elif label.lower() in ["motorcycle", "motorbike"]:
+                    class_id = 3
+                elif label.lower() == "bus":
+                    class_id = 5
+                elif label.lower() == "truck":
+                    class_id = 7
+                
+                # Check if in ROI
+                if self.roi.contains_bbox(x1, y1, x2, y2, self.frame_width, self.frame_height):
+                    total_detections += 1
+                    if class_id == COCO_PERSON:
+                        person_count += 1
+                        if self.frame_count < 3:
+                            self.logger.info(f"  -> Person in ROI!")
+                    elif class_id in COCO_VEHICLES:
+                        vehicle_count += 1
+                        if self.frame_count < 3:
+                            self.logger.info(f"  -> Vehicle in ROI!")
         
+        except ImportError as e:
+            if self.frame_count == 0:
+                self.logger.error(f"Cannot import hailo module: {e}")
+                self.logger.error("Make sure Hailo environment is sourced: source setup_env.sh")
         except Exception as e:
             if self.frame_count < 5:
                 self.logger.error(f"Error parsing detections: {e}")
-        
-        # Log warning if no detections found in first few frames
-        if self.frame_count < 5 and not found_detections:
-            self.logger.warning(f"No detection metadata found in frame {self.frame_count}")
+                import traceback
+                self.logger.error(traceback.format_exc())
         
         # Calculate processing time
         processing_time_ms = (time.time() - frame_start_time) * 1000
