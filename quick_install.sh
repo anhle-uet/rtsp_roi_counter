@@ -62,7 +62,7 @@ echo -e "${GREEN}✓ Dependencies installed${NC}"
 echo ""
 echo -e "${BLUE}Step 2: Creating application directory...${NC}"
 sudo mkdir -p "$INSTALL_DIR"
-sudo chown -R pi:pi "$INSTALL_DIR"
+sudo chown -R $USER:$USER "$INSTALL_DIR"
 
 # Copy application files
 cp "$SCRIPT_DIR/rtsp_roi_counter.py" "$INSTALL_DIR/"
@@ -102,8 +102,8 @@ echo ""
 echo -e "${BLUE}Step 4: Setting up logging...${NC}"
 sudo touch /var/log/rtsp_roi_counter.log
 sudo touch /var/log/memory_monitor.log
-sudo chown pi:pi /var/log/rtsp_roi_counter.log
-sudo chown pi:pi /var/log/memory_monitor.log
+sudo chown $USER:$USER /var/log/rtsp_roi_counter.log
+sudo chown $USER:$USER /var/log/memory_monitor.log
 
 echo -e "${GREEN}✓ Log files created${NC}"
 
