@@ -24,8 +24,8 @@ from datetime import datetime
 Gst.init(None)
 
 # COCO class IDs for person and vehicles
-COCO_PERSON = 0
-COCO_VEHICLES = [2, 3, 5, 7]  # car, motorcycle, bus, truck
+COCO_PERSON = 1
+COCO_VEHICLES = [2, 3, 4, 5, 6, 7, 8, 9]  # car, motorcycle, bus, truck
 
 @dataclass
 class ROI:
@@ -268,15 +268,22 @@ class RTSPROICounter:
             
             # Label to COCO class ID mapping
             LABEL_TO_CLASS = {
-                "person": 0,
-                "car": 2,
-                "automobile": 2,
-                "motorcycle": 3,
-                "motorbike": 3,
-                "bus": 5,
-                "truck": 7,
-                "lorry": 7,
+                "person": 1,
+                "bicycle": 2,
+                "bike": 2,
+                "car": 3,
+                "automobile": 3,
+                "motorcycle": 4,
+                "motorbike": 4,
+                "airplane": 5,
+                "aeroplane": 5,
+                "bus": 6,
+                "train": 7,
+                "truck": 8,
+                "lorry": 8,
+                "boat": 9,
             }
+
             
             # Process each detection
             for detection in detections:
