@@ -224,118 +224,94 @@ class RTSPROICounter:
         if buffer is None:
             return Gst.PadProbeReturn.OK
         
-        # Get detections from GstMeta
         person_count = 0
         vehicle_count = 0
         total_detections = 0
         found_detections = False
         
-        # Parse Hailo ROI metadata using the Hailo metadata API
+        # Try to import and use Hailo Python API
         try:
-            # Import Hailo GStreamer utilities
-            from gi.repository import GObject
+            import hailo
             
-            # Get all metadata from buffer
-            n_meta = buffer.get_n_meta()
+            # Get Hailo ROI list from buffer
+            roi_list = hailo.get_hailo_rois_from_buffer(buffer)
             
+            if self.frame_count < 5:
+                self.logger.info(f"Frame {self.frame_count}: Found {len(roi_list)} Hailo ROIs")
+            
+            # Process each ROI
+            for hailo_roi in roi_list:
+                # Get all detection objects
+                detections = hailo_roi.get_objects_typed(hailo.HAILO_DETECTION)
+                
+                if self.frame_count < 5:
+                    self.logger.info(f"  ROI has {len(detections)} detections")
+                
+                for detection in detections:
+                    # Get bounding box
+                    bbox = detection.get_bbox()
+                    class_id = detection.get_class_id()
+                    confidence = detection.get_confidence()
+                    
+                    # Get coordinates (normalized 0-1)
+                    x1 = bbox.xmin() * self.frame_width
+                    y1 = bbox.ymin() * self.frame_height
+                    x2 = bbox.xmax() * self.frame_width
+                    y2 = bbox.ymax() * self.frame_height
+                    
+                    found_detections = True
+                    
+                    if self.frame_count < 3:
+                        self.logger.debug(f"  Detection: class={class_id}, conf={confidence:.2f}, bbox=({x1:.0f},{y1:.0f},{x2:.0f},{y2:.0f})")
+                    
+                    # Check if in ROI
+                    if self.roi.contains_bbox(x1, y1, x2, y2, self.frame_width, self.frame_height):
+                        total_detections += 1
+                        if class_id == COCO_PERSON:
+                            person_count += 1
+                        elif class_id in COCO_VEHICLES:
+                            vehicle_count += 1
+        
+        except ImportError:
+            # Fallback: Try GStreamer metadata iteration
             if self.frame_count == 0:
-                self.logger.debug(f"Buffer has {n_meta} metadata items")
+                self.logger.warning("Hailo Python API not available, trying GStreamer metadata")
             
-            # Try to find Hailo metadata
-            for i in range(n_meta):
-                meta = buffer.get_meta(i)
-                if meta is None:
-                    continue
-                
-                # Get the meta info and check its API type
-                meta_info = meta.get_info()
-                if meta_info is None:
-                    continue
-                
-                # Log meta info on first frame
-                if self.frame_count == 0:
+            try:
+                # Iterate through metadata using foreach
+                def meta_foreach_func(buffer, meta, user_data):
+                    nonlocal person_count, vehicle_count, total_detections, found_detections
+                    
                     try:
-                        api_type = meta_info.get_name() if hasattr(meta_info, 'get_name') else str(meta_info)
-                        self.logger.debug(f"Meta {i}: {api_type}")
-                    except:
-                        pass
+                        # Try to get structure from meta
+                        if hasattr(meta, 'get_structure'):
+                            structure = meta.get_structure()
+                            if structure:
+                                struct_name = structure.get_name()
+                                
+                                if self.frame_count < 3:
+                                    self.logger.debug(f"Meta structure: {struct_name}")
+                                
+                                # Check for Hailo detection metadata
+                                if "hailo" in struct_name.lower() or "detection" in struct_name.lower():
+                                    # Try to parse detections from structure
+                                    # This depends on the specific format used by hailofilter
+                                    if structure.has_field('num_detections'):
+                                        num_dets = structure.get_int('num_detections')[1]
+                                        if self.frame_count < 3:
+                                            self.logger.info(f"Found {num_dets} detections in structure")
+                                        found_detections = True
+                    except Exception as e:
+                        if self.frame_count < 3:
+                            self.logger.debug(f"Error in meta_foreach: {e}")
+                    
+                    return True  # Continue iteration
                 
-                # Try to get structure from meta
-                try:
-                    structure = meta.get_structure()
-                    if structure is None:
-                        continue
-                    
-                    struct_name = structure.get_name()
-                    
-                    # Log structure name on first frame
-                    if self.frame_count == 0:
-                        self.logger.debug(f"Structure name: {struct_name}")
-                    
-                    # Check if this is hailo detection metadata
-                    if "hailo" in struct_name.lower() or "detection" in struct_name.lower():
-                        # Try to get number of detections
-                        num_fields = structure.n_fields()
-                        
-                        if self.frame_count < 5:  # Log first 5 frames for debugging
-                            self.logger.debug(f"Hailo structure has {num_fields} fields")
-                            for j in range(min(num_fields, 10)):  # Log first 10 fields
-                                field_name = structure.nth_field_name(j)
-                                self.logger.debug(f"  Field {j}: {field_name}")
-                        
-                        # Try different field naming conventions
-                        num_detections = 0
-                        if structure.has_field('num_detections'):
-                            num_detections = structure.get_int('num_detections')[1]
-                        elif structure.has_field('detection_count'):
-                            num_detections = structure.get_int('detection_count')[1]
-                        
-                        if num_detections > 0:
-                            found_detections = True
-                            if self.frame_count < 5:
-                                self.logger.info(f"Found {num_detections} detections in frame {self.frame_count}")
-                            
-                            for det_idx in range(num_detections):
-                                # Try to get detection data - try multiple naming conventions
-                                class_id = None
-                                x1, y1, x2, y2 = 0, 0, 0, 0
-                                
-                                # Try different field name patterns
-                                for pattern in [f'detection_{det_idx}_', f'object_{det_idx}_', f'det_{det_idx}_']:
-                                    if structure.has_field(f'{pattern}class_id'):
-                                        class_id = structure.get_int(f'{pattern}class_id')[1]
-                                        x1 = structure.get_double(f'{pattern}x1')[1] if structure.has_field(f'{pattern}x1') else \
-                                             structure.get_double(f'{pattern}xmin')[1]
-                                        y1 = structure.get_double(f'{pattern}y1')[1] if structure.has_field(f'{pattern}y1') else \
-                                             structure.get_double(f'{pattern}ymin')[1]
-                                        x2 = structure.get_double(f'{pattern}x2')[1] if structure.has_field(f'{pattern}x2') else \
-                                             structure.get_double(f'{pattern}xmax')[1]
-                                        y2 = structure.get_double(f'{pattern}y2')[1] if structure.has_field(f'{pattern}y2') else \
-                                             structure.get_double(f'{pattern}ymax')[1]
-                                        break
-                                
-                                if class_id is None:
-                                    continue
-                                
-                                # Convert to absolute coordinates if needed (check if values are 0-1 or already absolute)
-                                if x2 <= 1.0:  # Normalized coordinates
-                                    x1 *= self.frame_width
-                                    y1 *= self.frame_height
-                                    x2 *= self.frame_width
-                                    y2 *= self.frame_height
-                                
-                                # Check if in ROI
-                                if self.roi.contains_bbox(x1, y1, x2, y2, self.frame_width, self.frame_height):
-                                    total_detections += 1
-                                    if class_id == COCO_PERSON:
-                                        person_count += 1
-                                    elif class_id in COCO_VEHICLES:
-                                        vehicle_count += 1
+                buffer.foreach_meta(meta_foreach_func, None)
                 
-                except Exception as e:
-                    if self.frame_count < 5:
-                        self.logger.debug(f"Error accessing structure: {e}")
-                    continue
+            except Exception as e:
+                if self.frame_count < 3:
+                    self.logger.error(f"Error in GStreamer metadata fallback: {e}")
         
         except Exception as e:
             if self.frame_count < 5:
