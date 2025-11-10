@@ -69,8 +69,8 @@ cp "$SCRIPT_DIR/rtsp_roi_counter.py" "$INSTALL_DIR/"
 cp "$SCRIPT_DIR/memory_monitor_wrapper.sh" "$INSTALL_DIR/"
 cp "$SCRIPT_DIR/monitor_dashboard.sh" "$INSTALL_DIR/"
 cp "$SCRIPT_DIR/validate_installation.sh" "$INSTALL_DIR/"
-cp "$SCRIPT_DIR/README.md" "$INSTALL_DIR/"
-cp "$SCRIPT_DIR/DEPLOYMENT_GUIDE.md" "$INSTALL_DIR/"
+cp "$SCRIPT_DIR/README.md" "$INSTALL_DIR/" || true
+cp "$SCRIPT_DIR/DEPLOYMENT_GUIDE.md" "$INSTALL_DIR/" || true
 
 # Make scripts executable
 chmod +x "$INSTALL_DIR"/*.sh
@@ -127,8 +127,8 @@ StartLimitBurst=5
 
 [Service]
 Type=simple
-User=pi
-Group=pi
+User=orbro
+Group=orbro
 WorkingDirectory=$INSTALL_DIR
 
 # Source Hailo environment then run the application
