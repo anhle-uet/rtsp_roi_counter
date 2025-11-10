@@ -154,6 +154,7 @@ class RTSPROICounter:
         self.loop = None
         self.frame_count = 0
         self.last_log_time = time.time()
+        self.last_frame_time = None  # For measuring real frame-to-frame interval
         
         # Frame dimensions (will be updated from caps)
         self.frame_width = self.config.get('video_width', 640)
@@ -218,7 +219,14 @@ class RTSPROICounter:
     
     def on_buffer_probe(self, pad, info):
         """Process detection results using Hailo API"""
-        frame_start_time = time.time()
+        current_time = time.time()
+        
+        # Calculate real frame interval (pipeline FPS)
+        if self.last_frame_time is not None:
+            frame_interval_ms = (current_time - self.last_frame_time) * 1000
+        else:
+            frame_interval_ms = 0
+        self.last_frame_time = current_time
         
         buffer = info.get_buffer()
         if buffer is None:
@@ -292,32 +300,29 @@ class RTSPROICounter:
                 import traceback
                 self.logger.error(traceback.format_exc())
         
-        # Calculate processing time
-        processing_time_ms = (time.time() - frame_start_time) * 1000
-        
-        # Update statistics
+        # Update statistics with REAL frame interval
         stats = DetectionStats(
-            timestamp=time.time(),
+            timestamp=current_time,
             person_count=person_count,
             vehicle_count=vehicle_count,
             total_detections=total_detections,
-            processing_time_ms=processing_time_ms,
+            processing_time_ms=frame_interval_ms,  # This is now frame-to-frame time
             roi_name=self.roi.name
         )
         
-        self.perf_monitor.add_frame_time(processing_time_ms)
+        self.perf_monitor.add_frame_time(frame_interval_ms)
         self.perf_monitor.add_detection(stats)
         
         self.frame_count += 1
         
-        # Periodic logging
+        # Periodic logging (less verbose now)
         if time.time() - self.last_log_time > self.config.get('log_interval', 10):
             perf_stats = self.perf_monitor.get_stats()
             self.logger.info(
                 f"Frame {self.frame_count} | "
                 f"Persons: {person_count} | Vehicles: {vehicle_count} | "
                 f"FPS: {perf_stats.get('fps', 0):.1f} | "
-                f"Avg Time: {perf_stats.get('avg_processing_time_ms', 0):.1f}ms"
+                f"Interval: {perf_stats.get('avg_processing_time_ms', 0):.1f}ms"
             )
             self.last_log_time = time.time()
         
