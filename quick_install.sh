@@ -30,9 +30,9 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Installation paths
-INSTALL_DIR="/home/pi/rtsp_roi_counter"
+INSTALL_DIR="/home/orbro/rtsp_roi_counter"
 CONFIG_DIR="/etc/rtsp_roi_counter"
-HAILO_APPS="/home/pi/hailo_apps_infra"
+HAILO_APPS="/home/orbro/workspace/projects/hailo_rpi5_examples"
 
 echo -e "${BLUE}Installation Configuration:${NC}"
 echo "  Install directory: $INSTALL_DIR"
