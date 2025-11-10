@@ -228,55 +228,122 @@ class RTSPROICounter:
         person_count = 0
         vehicle_count = 0
         total_detections = 0
+        found_detections = False
         
-        # Parse Hailo ROI metadata
+        # Parse Hailo ROI metadata using the Hailo metadata API
         try:
-            # Get buffer metadata - use proper Hailo meta API
-            gst_meta = buffer.iterate_meta()
+            # Import Hailo GStreamer utilities
+            from gi.repository import GObject
             
-            # Iterate through all metadata
-            while gst_meta:
+            # Get all metadata from buffer
+            n_meta = buffer.get_n_meta()
+            
+            if self.frame_count == 0:
+                self.logger.debug(f"Buffer has {n_meta} metadata items")
+            
+            # Try to find Hailo metadata
+            for i in range(n_meta):
+                meta = buffer.get_meta(i)
+                if meta is None:
+                    continue
+                
+                # Get the meta info and check its API type
+                meta_info = meta.get_info()
+                if meta_info is None:
+                    continue
+                
+                # Log meta info on first frame
+                if self.frame_count == 0:
+                    try:
+                        api_type = meta_info.get_name() if hasattr(meta_info, 'get_name') else str(meta_info)
+                        self.logger.debug(f"Meta {i}: {api_type}")
+                    except:
+                        pass
+                
+                # Try to get structure from meta
                 try:
-                    meta = next(gst_meta)
-                    if meta is None:
-                        break
-                    
-                    # Get structure from meta (Hailo uses GstStructure for detections)
                     structure = meta.get_structure()
                     if structure is None:
                         continue
                     
-                    # Check if this contains detections
-                    if not structure.has_field('num_detections'):
-                        continue
+                    struct_name = structure.get_name()
                     
-                    num_detections = structure.get_int('num_detections')[1]
+                    # Log structure name on first frame
+                    if self.frame_count == 0:
+                        self.logger.debug(f"Structure name: {struct_name}")
                     
-                    for i in range(num_detections):
-                        # Get detection fields
-                        has_class = structure.has_field(f'detection_{i}_class_id')
-                        if not has_class:
-                            continue
-                            
-                        class_id = structure.get_int(f'detection_{i}_class_id')[1]
-                        x1 = structure.get_double(f'detection_{i}_x1')[1] * self.frame_width
-                        y1 = structure.get_double(f'detection_{i}_y1')[1] * self.frame_height
-                        x2 = structure.get_double(f'detection_{i}_x2')[1] * self.frame_width
-                        y2 = structure.get_double(f'detection_{i}_y2')[1] * self.frame_height
+                    # Check if this is hailo detection metadata
+                    if "hailo" in struct_name.lower() or "detection" in struct_name.lower():
+                        # Try to get number of detections
+                        num_fields = structure.n_fields()
                         
-                        # Check if in ROI
-                        if self.roi.contains_bbox(x1, y1, x2, y2, self.frame_width, self.frame_height):
-                            total_detections += 1
-                            if class_id == COCO_PERSON:
-                                person_count += 1
-                            elif class_id in COCO_VEHICLES:
-                                vehicle_count += 1
+                        if self.frame_count < 5:  # Log first 5 frames for debugging
+                            self.logger.debug(f"Hailo structure has {num_fields} fields")
+                            for j in range(min(num_fields, 10)):  # Log first 10 fields
+                                field_name = structure.nth_field_name(j)
+                                self.logger.debug(f"  Field {j}: {field_name}")
+                        
+                        # Try different field naming conventions
+                        num_detections = 0
+                        if structure.has_field('num_detections'):
+                            num_detections = structure.get_int('num_detections')[1]
+                        elif structure.has_field('detection_count'):
+                            num_detections = structure.get_int('detection_count')[1]
+                        
+                        if num_detections > 0:
+                            found_detections = True
+                            if self.frame_count < 5:
+                                self.logger.info(f"Found {num_detections} detections in frame {self.frame_count}")
+                            
+                            for det_idx in range(num_detections):
+                                # Try to get detection data - try multiple naming conventions
+                                class_id = None
+                                x1, y1, x2, y2 = 0, 0, 0, 0
+                                
+                                # Try different field name patterns
+                                for pattern in [f'detection_{det_idx}_', f'object_{det_idx}_', f'det_{det_idx}_']:
+                                    if structure.has_field(f'{pattern}class_id'):
+                                        class_id = structure.get_int(f'{pattern}class_id')[1]
+                                        x1 = structure.get_double(f'{pattern}x1')[1] if structure.has_field(f'{pattern}x1') else \
+                                             structure.get_double(f'{pattern}xmin')[1]
+                                        y1 = structure.get_double(f'{pattern}y1')[1] if structure.has_field(f'{pattern}y1') else \
+                                             structure.get_double(f'{pattern}ymin')[1]
+                                        x2 = structure.get_double(f'{pattern}x2')[1] if structure.has_field(f'{pattern}x2') else \
+                                             structure.get_double(f'{pattern}xmax')[1]
+                                        y2 = structure.get_double(f'{pattern}y2')[1] if structure.has_field(f'{pattern}y2') else \
+                                             structure.get_double(f'{pattern}ymax')[1]
+                                        break
+                                
+                                if class_id is None:
+                                    continue
+                                
+                                # Convert to absolute coordinates if needed (check if values are 0-1 or already absolute)
+                                if x2 <= 1.0:  # Normalized coordinates
+                                    x1 *= self.frame_width
+                                    y1 *= self.frame_height
+                                    x2 *= self.frame_width
+                                    y2 *= self.frame_height
+                                
+                                # Check if in ROI
+                                if self.roi.contains_bbox(x1, y1, x2, y2, self.frame_width, self.frame_height):
+                                    total_detections += 1
+                                    if class_id == COCO_PERSON:
+                                        person_count += 1
+                                    elif class_id in COCO_VEHICLES:
+                                        vehicle_count += 1
                 
-                except StopIteration:
-                    break
+                except Exception as e:
+                    if self.frame_count < 5:
+                        self.logger.debug(f"Error accessing structure: {e}")
+                    continue
         
         except Exception as e:
-            self.logger.debug(f"Error parsing detections: {e}")
+            if self.frame_count < 5:
+                self.logger.error(f"Error parsing detections: {e}")
+        
+        # Log warning if no detections found in first few frames
+        if self.frame_count < 5 and not found_detections:
+            self.logger.warning(f"No detection metadata found in frame {self.frame_count}")
         
         # Calculate processing time
         processing_time_ms = (time.time() - frame_start_time) * 1000
@@ -381,7 +448,12 @@ class RTSPROICounter:
             
             'queue max-size-buffers=3 max-size-bytes=0 max-size-time=0 ! '
             f'hailofilter so-path={postprocess_so} '
-            'qos=false name=hailofilter ! '
+            'qos=false ! '
+            
+            # hailooverlay processes the detections and makes them available
+            'queue max-size-buffers=3 max-size-bytes=0 max-size-time=0 ! '
+            'hailooverlay name=hailo_display ! '
+            'videoconvert name=identity_callback ! '
         )
         
         # Sink - fakesink for headless operation
@@ -410,20 +482,20 @@ class RTSPROICounter:
             self.logger.error(f"Failed to create pipeline: {e}")
             return 1
         
-        # Add probe to hailofilter output
-        hailofilter = self.pipeline.get_by_name('hailofilter')
-        if hailofilter:
-            src_pad = hailofilter.get_static_pad('src')
-            if src_pad:
-                src_pad.add_probe(
+        # Add probe after hailooverlay (via videoconvert)
+        identity = self.pipeline.get_by_name('identity_callback')
+        if identity:
+            sink_pad = identity.get_static_pad('sink')
+            if sink_pad:
+                sink_pad.add_probe(
                     Gst.PadProbeType.BUFFER,
                     self.on_buffer_probe
                 )
-                self.logger.info("Added buffer probe to hailofilter")
+                self.logger.info("Added buffer probe after hailooverlay")
             else:
-                self.logger.warning("Could not get src pad from hailofilter")
+                self.logger.warning("Could not get sink pad from videoconvert")
         else:
-            self.logger.warning("Could not find hailofilter element")
+            self.logger.warning("Could not find videoconvert element")
         
         # Setup bus
         bus = self.pipeline.get_bus()
