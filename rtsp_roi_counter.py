@@ -366,16 +366,21 @@ class RTSPROICounter:
         nms_score_threshold = self.config.get('nms_score_threshold', 0.3)
         nms_iou_threshold = self.config.get('nms_iou_threshold', 0.45)
         
+        # Build NMS parameters string for hailonet (following Hailo's convention)
+        nms_params = (
+            f'nms-score-threshold={nms_score_threshold} '
+            f'nms-iou-threshold={nms_iou_threshold} '
+            f'output-format-type=HAILO_FORMAT_TYPE_FLOAT32'
+        )
+        
         inference_pipeline = (
             'queue max-size-buffers=3 max-size-bytes=0 max-size-time=0 ! '
             f'hailonet hef-path="{hef_path}" '
             f'batch-size={batch_size} '
-            'scheduling-algorithm=1 '
-            'output-format-type=HAILO_FORMAT_TYPE_FLOAT32 ! '
+            f'{nms_params} ! '
             
             'queue max-size-buffers=3 max-size-bytes=0 max-size-time=0 ! '
             f'hailofilter so-path={postprocess_so} '
-            f'config-string="\\"nms_score_threshold\\":{nms_score_threshold},\\"nms_iou_threshold\\":{nms_iou_threshold}" '
             'qos=false name=hailofilter ! '
         )
         

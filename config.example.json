@@ -1,7 +1,7 @@
 {
-  "rtsp_url": "rtsp://192.168.1.100:8554/camera1",
-  "hef_path": "/home/pi/hailo_apps_infra/resources/models/hailo8/yolov6n.hef",
-  "postprocess_so": "/home/pi/hailo_apps_infra/resources/so/libyolo_hailortpp_postprocess.so",
+  "rtsp_url": "rtsp://100.109.98.32:8554/mystream",
+  "hef_path": "/usr/share/hailo-models/yolov6n_h8.hef",
+  "postprocess_so": "/usr/local/hailo/resources/so/libyolo_hailortpp_postprocess.so",
   
   "roi": {
     "x1": 0.2,
