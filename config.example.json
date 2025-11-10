@@ -1,0 +1,41 @@
+{
+  "rtsp_url": "rtsp://192.168.1.100:8554/camera1",
+  "hef_path": "/home/pi/hailo_apps_infra/resources/models/hailo8/yolov6n.hef",
+  "postprocess_so": "/home/pi/hailo_apps_infra/resources/so/libyolo_hailortpp_postprocess.so",
+  
+  "roi": {
+    "x1": 0.2,
+    "y1": 0.2,
+    "x2": 0.8,
+    "y2": 0.8,
+    "name": "main_entrance"
+  },
+  
+  "inference_width": 640,
+  "inference_height": 640,
+  "video_width": 640,
+  "video_height": 640,
+  
+  "batch_size": 1,
+  "nms_score_threshold": 0.3,
+  "nms_iou_threshold": 0.45,
+  
+  "rtsp_latency": 200,
+  
+  "enable_http_status": true,
+  "status_port": 8080,
+  
+  "log_file": "/var/log/rtsp_roi_counter.log",
+  "log_level": "INFO",
+  "log_interval": 10,
+  
+  "_comments": {
+    "rtsp_url": "Your RTSP camera stream URL",
+    "roi": "Region of Interest with relative coordinates (0.0-1.0)",
+    "nms_score_threshold": "Detection confidence threshold (0.0-1.0)",
+    "nms_iou_threshold": "Non-maximum suppression IoU threshold",
+    "rtsp_latency": "RTSP buffer latency in milliseconds",
+    "status_port": "HTTP port for status monitoring (access via http://PI_IP:8080/status)",
+    "log_interval": "Interval in seconds between log messages"
+  }
+}

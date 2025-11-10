@@ -1,0 +1,41 @@
+[Unit]
+Description=RTSP ROI Counter - Hailo Object Detection
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=200
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=pi
+Group=pi
+WorkingDirectory=/home/pi/rtsp_roi_counter
+
+# Source Hailo environment then run the application
+# IMPORTANT: Update paths to match your installation
+ExecStartPre=/bin/bash -c 'test -f /home/pi/hailo_apps_infra/setup_env.sh'
+ExecStart=/bin/bash -c 'source /home/pi/hailo_apps_infra/setup_env.sh && /home/pi/rtsp_roi_counter/memory_monitor_wrapper.sh /etc/rtsp_roi_counter/config.json 1500'
+
+# Restart configuration
+Restart=always
+RestartSec=10
+
+# Resource limits for Pi5 with 2GB RAM
+MemoryMax=1800M
+MemoryHigh=1600M
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=rtsp-roi-counter
+
+# Security (adjust as needed)
+NoNewPrivileges=true
+PrivateTmp=true
+
+# Environment
+Environment="PYTHONUNBUFFERED=1"
+Environment="GST_DEBUG=2"
+
+[Install]
+WantedBy=multi-user.target
